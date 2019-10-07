@@ -1,0 +1,311 @@
+library(readr)
+library(skimr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tidyverse)
+library(DataExplorer)
+library(DMwR)
+library(caret)
+library(ranger)
+library(lubridate)
+library(missRanger)
+library(xgboost)
+
+#Reading all input files
+item_data<-read_csv("~/R_Scripts/AV_American_Express/item_data.csv")
+campaign_data<-read_csv("~/R_Scripts/AV_American_Express/campaign_data.csv")
+coupon_item_mapping<-read_csv("~/R_Scripts/AV_American_Express/coupon_item_mapping.csv")
+customer_demographics<-read_csv("~/R_Scripts/AV_American_Express/customer_demographics.csv")
+customer_transaction_data<-read_csv("~/R_Scripts/AV_American_Express/customer_transaction_data.csv")
+train<-read_csv("~/R_Scripts/AV_American_Express/train.csv")
+
+
+xy<-left_join(customer_transaction_data,coupon_item_mapping,by=c("item_id"))
+xy<-na.omit(xy)
+#xy1<-xy%>%select(customer_id,coupon_id,coupon_discount)%>%group_by(customer_id,coupon_id)%>%summarize(t_dis=sum(coupon_discount))
+xy2<-xy%>%select(customer_id,coupon_id)%>%group_by(customer_id,coupon_id)%>%distinct()%>%mutate(status=1)
+xy3<-left_join(train,xy2,by=c("customer_id","coupon_id"))
+xy3[is.na(xy3)]<-0
+train<-xy3
+
+
+# Pre-Processing of Customer demographics
+x<-separate(customer_demographics,age_range,c("min_age","max_age"),sep=3)
+y<-separate(x,min_age,c("min_age","symbol"),sep=2)   
+y$min_age<-as.numeric(y$min_age)
+y$max_age<-as.numeric(y$max_age)
+y<-subset(y,select=-c(symbol))
+y[c("max_age")][is.na(y[c("max_age")])]<-70
+skim(customer_demographics)
+
+
+
+# # #Preprocess customer demographics - no_of_children
+# ct1<-customer_demographics%>%select(customer_id,age_range,marital_status,rented,family_size,no_of_children,income_bracket)%>%group_by(rented)%>%count()
+# colnames(ct1)[colnames(ct1)=="n"]<-"count_rented"
+# ct2<-customer_demographics%>%select(customer_id,age_range,marital_status,rented,family_size,no_of_children,income_bracket)%>%group_by(family_size)%>%count()
+# colnames(ct2)[colnames(ct2)=="n"]<-"count_family"
+# ct3<-customer_demographics%>%select(customer_id,age_range,marital_status,rented,family_size,no_of_children,income_bracket)%>%group_by(income_bracket)%>%count()
+# colnames(ct3)[colnames(ct3)=="n"]<-"count_income"
+# temp1<-inner_join(customer_demographics,ct1,by=c("rented"))
+# temp2<-inner_join(temp1,ct2,by=c("family_size"))
+# temp3<-inner_join(temp2,ct3,by=c("income_bracket"))
+
+xx1<-data.frame(customer_demographics,min_age=y$min_age,max_age=y$max_age)
+customer_demographics<-xx1
+
+customer_demographics$age_range<-as.factor(customer_demographics$age_range)
+customer_demographics$marital_status<-as.factor(customer_demographics$marital_status)
+customer_demographics$rented<-as.factor(customer_demographics$rented)
+customer_demographics$family_size<-as.factor(customer_demographics$family_size)
+customer_demographics$no_of_children<-as.factor(customer_demographics$no_of_children)
+customer_demographics$income_bracket<-as.factor(customer_demographics$income_bracket)
+
+#Preprocess train data
+train$redemption_status<-as.factor(train$redemption_status)
+plot_str(train)
+
+#m1 -merging train dataset and customer demographics
+m1<-left_join(train,customer_demographics,by=c("customer_id"))
+plot_str(m1)
+
+item_data$brand<-as.factor(item_data$brand)
+item_data$brand_type<-as.factor(item_data$brand_type)
+item_data$category<-as.factor(item_data$category)
+
+#m2 -merging coupon item mapping and item data by coupon_id
+m2<-left_join(coupon_item_mapping,item_data,by=c("item_id"))
+plot_str(m2)
+
+#cxo1<-m2%>%select(coupon_id,item_id,brand,brand_type,category)%>%group_by(item_id)%>%summarize(uni_coupon=n_distinct(coupon_id))
+#cxo2<-m2%>%select(coupon_id,brand)%>%group_by(brand)%>%summarize(uni_co_brand=n_distinct(coupon_id))
+
+#m2<-left_join(m2,cxo1,by=c("item_id"))
+
+#Create a summary table from Coupon_item_mapping and item_data table
+# m2%>%select(coupon_id,item_id)%>%group_by(coupon_id)%>%summarise(unique_item=n_distinct(item_id))
+# m2%>%select(coupon_id,brand)%>%group_by(coupon_id)%>%summarize(unique_brand=n_distinct(brand))
+# m2%>%select(coupon_id,category)%>%group_by(coupon_id)%>%summarize(unique_category=n_distinct(category))
+# m2%>%select(coupon_id,brand_type)%>%group_by(coupon_id)%>%summarize(unique_brand=n_distinct(brand_type))
+
+
+#ci1<-m2%>%select(coupon_id,brand)%>%group_by(coupon_id)%>%count()
+#colnames(ci1)[colnames(ci1)=="n"]<-"n_item"
+# ci2<-m2%>%select(coupon_id,brand)%>%group_by(coupon_id)%>%count(brand)
+# colnames(ci2)[colnames(ci2)=="n"]<-"n_brand"
+# ci2<-subset(ci2,select=-c(coupon_id))
+# ci3<-m2%>%select(coupon_id,brand_type)%>%group_by(coupon_id)%>%count(brand_type)
+# colnames(ci3)[colnames(ci3)=="n"]<-"n_brandtype"
+# ci4<-m2%>%select(coupon_id,category)%>%group_by(coupon_id)%>%count(category)
+# colnames(ci4)[colnames(ci4)=="n"]<-"n_category"
+
+Cpn_item_smy<-m2%>%select(coupon_id,item_id,brand,brand_type,category)%>%group_by(coupon_id)%>%summarize(unique_item=as.numeric(n_distinct(item_id)),unique_brand=as.numeric(n_distinct(brand)),unique_brand_type=as.numeric(n_distinct(brand_type)),unique_category=as.numeric(n_distinct(category)))
+plot_str(Cpn_item_smy)
+
+#Preprocess - Campaign data
+campaign_data$start_date<-strptime(campaign_data$start_date,format="%d/%m/%y")
+campaign_data$end_date<-strptime(campaign_data$end_date,format="%d/%m/%y")
+campaign_data$duration<-difftime(campaign_data$end_date,campaign_data$start_date,units="days")
+campaign_data$duration<-as.numeric(campaign_data$duration)
+campaign_data$campaign_type<-as.factor(campaign_data$campaign_type)
+
+#feature engineering - Campaign data
+cd0<-campaign_data%>%mutate(cst_mth=month(start_date,label = TRUE),cen_mth=month(end_date,label = TRUE))
+cd1<-cd0%>%select(campaign_id,campaign_type,cst_mth)%>%group_by(campaign_type)%>%count()
+cd2<-cd0%>%select(campaign_id,campaign_type,cst_mth)%>%group_by(campaign_type,cst_mth)%>%count(campaign_type)
+cd3<-pivot_wider(cd2,names_from = cst_mth,values_from = n)
+cd3[is.na(cd3)]<-0
+colnames(cd3)<-c("campaign_type","cst_Feb","cst_May","cst_Aug","cst_Sep","cst_Nov","cst_Jan","cst_Mar","cst_Apr","cst_Jul","cst_Oct","cst_Dec")
+cd4<-cd0%>%select(campaign_id,campaign_type,cen_mth)%>%group_by(campaign_type,cen_mth)%>%count(campaign_type)
+cd5<-pivot_wider(cd4,names_from = cen_mth,values_from = n )
+cd5[is.na(cd5)]<-0
+colnames(cd5)<-c("campaign_type","cen_Jan","cen_Apr","cen_Jul","cen_Sep","cen_Oct","cen_Feb","cen_Mar","cen_May","cen_Jun","cen_Aug","cen_Nov","cen_Dec")
+cd5
+cd6<-inner_join(cd3,cd5,by=c("campaign_type"))
+cd7<-inner_join(cd1,cd6,by=c("campaign_type"))
+colnames(cd7)[colnames(cd7)=="n"]<-"total_camp_txn"
+
+zz1<-inner_join(campaign_data,cd7,by=c("campaign_type"))
+campaign_data<-zz1
+
+summary(campaign_data)
+plot_str(campaign_data)
+
+
+#new feature identification from Customer Transaction Table
+nf<-customer_transaction_data%>%mutate(yr=year(date),mth=month(date,label = TRUE))
+nf1<-nf%>%select(customer_id,yr,mth)%>%group_by(customer_id,mth)%>%count(customer_id)  
+nf2<-pivot_wider(nf1,names_from = mth,values_from = n)
+nf3<-nf%>%select(customer_id,yr,mth)%>%group_by(customer_id,yr)%>%count(customer_id) 
+nf4<-pivot_wider(nf3,names_from = yr,values_from = n)
+nf5<-nf%>%select(customer_id,yr,mth)%>%group_by(customer_id)%>%count(customer_id)
+
+cust1<-left_join(nf5,nf4,by=c("customer_id"))
+cust2<-left_join(cust1,nf2,by=c("customer_id"))
+cust2[is.na(cust2)]<-0
+colnames(cust2)[colnames(cust2)=="n"]<-"total_txn"
+colnames(cust2)[colnames(cust2)=="2012"]<-"yr_2012"
+colnames(cust2)[colnames(cust2)=="2013"]<-"yr_2013"
+
+#Preprocess Customer transaction summary
+Cust_txn_smy<-customer_transaction_data%>%
+  select(date,customer_id,item_id,quantity,selling_price,other_discount,coupon_discount)%>%group_by(customer_id)%>%
+  summarize(item_purchase=as.numeric(n_distinct(item_id)),Total_qty=sum(quantity),Total_price=sum(selling_price),Total_other_discount=abs(sum(other_discount)),Total_coupon_discount=abs(sum(coupon_discount)),avg_sp=mean(selling_price),Avg_oth_disc=mean(other_discount),Avg_qty=mean(quantity),Avg_coup_disc=mean(coupon_discount))%>%
+  mutate(Total_final_price=Total_price-Total_other_discount-Total_coupon_discount)
+plot_str(Cust_txn_smy)
+
+zzz<-left_join(Cust_txn_smy,cust2,by=c("customer_id"))
+Cust_txn_smy<-zzz
+
+#merging m1 and coupon_item_table_summary
+m3<-left_join(m1,Cpn_item_smy,by=c("coupon_id"))
+plot_str(m3)
+
+#merging m3 and campaign data
+m4<-left_join(m3,campaign_data,by=c("campaign_id"))
+plot_str(m4)
+
+#merging m4 and cust_txn_smy
+m5<-left_join(m4,Cust_txn_smy,by=c("customer_id"))
+
+#subsetting and imputing missing values
+m5<-subset(m5,select=-c(id,campaign_id,coupon_id,customer_id,start_date,end_date))
+class(m5$status)<-as.factor(m5$status)
+
+set.seed(1000)
+m5_imputed<-missRanger(m5,pmm.k=3,verbose = 2,num.trees=500)
+skim(m5_imputed)
+m5_imputed<-as.data.frame(m5_imputed)
+table(m5_imputed$redemption_status)
+plot_str(m5_imputed)
+
+#balancing the dataset
+set.seed(1500)
+m5_bal_train<-SMOTE(redemption_status~.,m5_imputed, perc.over = 11000, perc.under = 100)
+table(m5_bal_train$redemption_status)
+
+ic_y<-as.matrix(subset(m5_bal_train,select=c(redemption_status)))#creating seperate Y column
+m6_train<-subset(m5_bal_train,select=-c(redemption_status))
+nrow(m6_train)
+
+#------------------------------Performing the same on test data------------------------
+test<-read_csv("~/R_Scripts/AV_American_Express/test_QyjYwdj.csv")
+xy4<-left_join(test,xy2,by=c("customer_id","coupon_id"))
+xy4[is.na(xy4)]<-0
+test<-xy4
+class(test$status)<-as.factor(test$status)
+
+
+n1<-left_join(test,customer_demographics,by=c("customer_id"))
+n2<-left_join(n1,Cpn_item_smy,by=c("coupon_id"))
+n3<-left_join(n2,campaign_data,by=c("campaign_id"))
+n4<-left_join(n3,Cust_txn_smy,by=c("customer_id"))
+skim(n4)
+testresult_column<-subset(n4,select=c(id,campaign_id,coupon_id,customer_id))
+n5<-subset(n4,select=-c(id,campaign_id,coupon_id,customer_id,start_date,end_date))
+set.seed(2000)
+n5_imputed<-missRanger(n5,pmm.k=3,verbose = 2,num.trees=500)
+
+index<-nrow(m6_train)
+index<-index+1
+combined_df<-rbind(m6_train,n5_imputed)
+plot_str(combined_df)
+
+library(fastDummies)
+ic<-dummy_cols(combined_df,select_columns = c("status","age_range","marital_status","rented","family_size","no_of_children","income_bracket","campaign_type"),remove_first_dummy = TRUE)
+ic<-subset(ic,select=-c(status,age_range,marital_status,rented,family_size,no_of_children,income_bracket,campaign_type))
+plot_str(ic)
+
+ic<-scale(ic,center=TRUE,scale=TRUE)
+
+ic_train_x<-ic[1:nrow(m6_train),]
+ic_test_x<-ic[index:nrow(combined_df),]
+
+
+params_r<-list(
+  eta = 0.01,
+  max_depth = 7,
+  min_child_weight = 5
+  
+)
+
+set.seed(2000)
+
+library(xgboost)
+#fit the final model
+xgb.fit.final <- xgboost(
+  params = params_r,
+  data = ic_train_x,
+  label = ic_y,
+  nrounds = 5000,
+  objective = "binary:logistic",  
+  verbose = 2,               
+  early_stopping_rounds = 20,     # stop if no improvement for 20 consecutive trees
+  eval_metric="auc",
+  stratified = TRUE
+)
+
+print(xgb.fit.final,verbose = T)
+
+importance_matrix <- xgb.importance(model = xgb.fit.final)
+xgb.plot.importance(importance_matrix)
+
+pred <- predict(xgb.fit.final, ic_test_x)
+redemp<-as.numeric(pred>0.5)
+histogram(pred)
+plot_bar(redemp)
+table(redemp)
+output<-cbind(testresult_column[,1],pred)
+colnames(output)[colnames(output)=="pred"]<-"redemption_status"
+write.csv(output,file="sample_submission_Xgboost11.csv")
+getwd()
+
+# #--------------------------------------------------------------------------------------
+# #Hyper Parameter Tuning
+# #--------------------------------------------------------------------------------------
+# hyper_grid <- expand.grid(
+#   eta = c(.01, .05, .1),
+#   max_depth = c(3, 5, 7),
+#   min_child_weight = c(3, 5, 7),
+#   optimal_trees = 0,               # a place to dump results
+#   max_aucpr=0                      # a place to dump results
+# )
+# 
+# nrow(hyper_grid)
+# 
+# for(i in 1:nrow(hyper_grid)) {
+#   
+#   # create parameter list
+#   params <- list(
+#     eta = hyper_grid$eta[i],
+#     max_depth = hyper_grid$max_depth[i],
+#     min_child_weight = hyper_grid$min_child_weight[i]
+#     
+#   )
+#   
+#   # reproducibility
+#   set.seed(123)
+#   
+#   # train model
+#   xgb.tune <- xgb.cv(
+#     params = params,
+#     data = ic_train_x,
+#     label = ic_y,
+#     nrounds = 5000,
+#     nfold = 3,
+#     objective = "binary:logistic",  # for regression models
+#     verbose = 2,               
+#     eval_metric="auc",
+#     early_stopping_rounds = 10 # stop if no improvement for 10 consecutive trees
+#   )
+#   
+#   # add min training error and trees to grid
+#   hyper_grid$best_iteration[i] <- xgb.tune$best_iteration
+#   hyper_grid$max_aucpr[i]<-max(xgb.tune$evaluation_log$test_aucpr_mean)
+# }
+# 
+# parameters<-hyper_grid%>%
+#  arrange(-max_aucpr)
+# write.csv(parameters,file="hyper_parameter_tuning.csv") 
+
